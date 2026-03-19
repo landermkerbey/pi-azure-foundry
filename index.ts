@@ -14,7 +14,8 @@
  *
  * Usage:
  *   AZURE_FOUNDRY_API_KEY=your-key pi
- *   # Then /model and select azure-foundry/claude-sonnet-4-6
+ *   # Then /model and select azure-foundry/claude-opus-4-6
+ *                              or azure-foundry/claude-sonnet-4-6
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -417,6 +418,15 @@ export default function (pi: ExtensionAPI) {
 		api: "azure-foundry-anthropic",
 
 		models: [
+			{
+				id: "claude-opus-4-6",
+				name: "Claude Opus 4.6 (Azure Foundry)",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+				contextWindow: 200000,
+				maxTokens: 32000,
+			},
 			{
 				id: "claude-sonnet-4-6",
 				name: "Claude Sonnet 4.6 (Azure Foundry)",
