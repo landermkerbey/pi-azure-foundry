@@ -187,7 +187,7 @@ function convertTools(tools: Tool[]): any[] {
  * "adaptive", so this set is deliberately an explicit, narrow allowlist:
  * anything new defaults to the modern format and keeps working.
  */
-const LEGACY_THINKING_MODELS = new Set(["claude-opus-4-6", "claude-sonnet-4-6"]);
+const LEGACY_THINKING_MODELS = new Set(["claude-opus-4-5", "claude-opus-4-6", "claude-sonnet-4-6"]);
 
 function mapStopReason(reason: string): StopReason {
 	switch (reason) {
@@ -461,7 +461,7 @@ const FALLBACK_MODELS: Model<Api>[] = [
 		name: "Claude Opus 5 (Azure Foundry)",
 		reasoning: true,
 		input: ["text", "image"],
-		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 		contextWindow: 1000000,
 		maxTokens: 32000,
 	},
@@ -506,9 +506,18 @@ const FALLBACK_MODELS: Model<Api>[] = [
 		name: "Claude Opus 4.6 (Azure Foundry)",
 		reasoning: true,
 		input: ["text", "image"],
-		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 		contextWindow: 1000000,
 		maxTokens: 32000,
+	},
+	{
+		id: "claude-opus-4-5",
+		name: "Claude Opus 4.5 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
 	},
 	{
 		id: "claude-sonnet-4-6",
@@ -536,7 +545,7 @@ const KNOWN_MODEL_META: Array<{
 	{
 		prefix: "claude-opus-5",
 		reasoning: true,
-		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 		contextWindow: 1000000,
 		maxTokens: 32000,
 	},
@@ -572,11 +581,19 @@ const KNOWN_MODEL_META: Array<{
 	{
 		prefix: "claude-opus-4-6",
 		reasoning: true,
-		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 		contextWindow: 1000000,
 		maxTokens: 32000,
 	},
-	// General Opus 4 catch-all (any future point releases)
+	{
+		prefix: "claude-opus-4-5",
+		reasoning: true,
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
+	},
+	// General Opus 4 catch-all (any future point releases).
+	// Opus is $5/$25 from 4.5 onward.
 	{
 		prefix: "claude-opus-4",
 		reasoning: true,
