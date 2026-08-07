@@ -179,6 +179,16 @@ function convertTools(tools: Tool[]): any[] {
 	}));
 }
 
+/**
+ * Models that only support the LEGACY thinking API
+ * (thinking.type="enabled" + budget_tokens) and reject "adaptive".
+ *
+ * Verified directly against the gateway. Every other deployed model accepts
+ * "adaptive", so this set is deliberately an explicit, narrow allowlist:
+ * anything new defaults to the modern format and keeps working.
+ */
+const LEGACY_THINKING_MODELS = new Set(["claude-opus-4-6", "claude-sonnet-4-6"]);
+
 function mapStopReason(reason: string): StopReason {
 	switch (reason) {
 		case "end_turn":
@@ -267,35 +277,54 @@ function streamCorpGateway(
 			}
 
 			// Handle thinking/reasoning.
-			// Gen-5+ models (claude-*-5, claude-opus-5, etc.) use the new
-			// "adaptive" thinking API with output_config.effort, while older
-			// models use the "enabled" API with budget_tokens.
+			//
+			// The gateway exposes two mutually-exclusive thinking APIs. Verified
+			// against the live gateway (see LEGACY_THINKING_MODELS below):
+			//
+			//   thinking.type="adaptive" + output_config.effort
+			//     -> accepted by EVERY deployed model, including opus-4-6/4-7/4-8
+			//   thinking.type="enabled" + budget_tokens
+			//     -> accepted ONLY by claude-opus-4-6 and claude-sonnet-4-6
+			//
+			// So "adaptive" is the safe default and legacy is the narrow special
+			// case. Defaulting the other way silently breaks any model not on the
+			// allowlist (this is what made claude-opus-4-8 fail with
+			// '"thinking.type.enabled" is not supported for this model').
 			if (options?.reasoning && model.reasoning) {
-				const usesAdaptiveThinking = /claude-[a-z]+-5/.test(model.id) || model.id.startsWith("claude-opus-5");
-				if (usesAdaptiveThinking) {
-					// Map pi reasoning levels → Anthropic effort values
-					const effortMap: Record<string, string> = {
-						minimal: "low",
-						low: "low",
-						medium: "medium",
-						high: "high",
-						xhigh: "high",
-					};
-					const effort = effortMap[options.reasoning] ?? "medium";
-					(params as any).thinking = { type: "adaptive" };
-					(params as any).output_config = { effort };
-				} else {
+				if (LEGACY_THINKING_MODELS.has(model.id)) {
 					const defaultBudgets: Record<string, number> = {
 						minimal: 1024,
 						low: 4096,
 						medium: 10240,
 						high: 20480,
+						xhigh: 32768,
 					};
 					const customBudget = options.thinkingBudgets?.[options.reasoning as keyof typeof options.thinkingBudgets];
-					params.thinking = {
-						type: "enabled",
-						budget_tokens: customBudget ?? defaultBudgets[options.reasoning] ?? 10240,
+					const requested = customBudget ?? defaultBudgets[options.reasoning] ?? 10240;
+					// The API rejects the request unless max_tokens > budget_tokens.
+					// max_tokens defaults to maxTokens/3, which is smaller than the
+					// high/xhigh budgets, so clamp instead of sending an invalid pair.
+					// Floor of 1024 is the API minimum for enabled thinking.
+					const budget = Math.max(1024, Math.min(requested, params.max_tokens - 1));
+					params.thinking = { type: "enabled", budget_tokens: budget };
+					// Guarantee headroom if max_tokens is itself at/below the floor.
+					if (params.max_tokens <= budget) {
+						params.max_tokens = budget + 1;
+					}
+				} else {
+					// Gateway accepts: 'low' | 'medium' | 'high' | 'xhigh' | 'max'.
+					// pi's levels map 1:1 except "minimal", which has no equivalent.
+					const effortMap: Record<string, string> = {
+						minimal: "low",
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "xhigh",
 					};
+					const effort = effortMap[options.reasoning] ?? "medium";
+					// Cast: @anthropic-ai/sdk 0.52.0 predates these fields.
+					(params as any).thinking = { type: "adaptive" };
+					(params as any).output_config = { effort };
 				}
 			}
 
@@ -562,21 +591,6 @@ const KNOWN_MODEL_META: Array<{
 		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 		contextWindow: 1000000,
 		maxTokens: 64000,
-	},
-	// ----- Haiku (unchanged) -----
-	{
-		prefix: "claude-haiku-3-5",
-		reasoning: false,
-		cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
-		contextWindow: 200000,
-		maxTokens: 8192,
-	},
-	{
-		prefix: "claude-haiku-3",
-		reasoning: false,
-		cost: { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
-		contextWindow: 200000,
-		maxTokens: 4096,
 	},
 ];
 
