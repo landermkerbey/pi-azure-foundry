@@ -1,21 +1,22 @@
 /**
- * Azure Foundry Provider Extension
+ * Corporate Gateway Provider Extension
  *
- * Connects pi to Claude models hosted on Microsoft Azure's Foundry platform.
+ * Connects pi to Claude models hosted via the internal API gateway.
  *
  * Azure Foundry uses the Anthropic Messages API but requires:
- *   - A different base URL (your Foundry endpoint)
- *   - Authorization: Bearer <key> (instead of x-api-key)
+ *   - A different base URL (the internal gateway endpoint)
+ *   - api-key <key> header (instead of x-api-key or Authorization: Bearer)
  *
  * Environment variables:
- *   AZURE_FOUNDRY_API_KEY   - Your Azure Foundry API key (required)
- *   AZURE_FOUNDRY_BASE_URL  - Your Foundry endpoint base URL (required)
- *                             e.g. https://your-instance.services.ai.azure.com/anthropic
+ *   CORP_GATEWAY_API_KEY   - Your gateway API key (required)
+ *   CORP_GATEWAY_BASE_URL  - Your gateway endpoint base URL (required)
+ *                             e.g. https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic
  *
  * Usage:
- *   AZURE_FOUNDRY_API_KEY=your-key pi
- *   # Then /model and select azure-foundry/claude-opus-4-6
- *                              or azure-foundry/claude-sonnet-4-6
+ *   CORP_GATEWAY_API_KEY=your-key pi
+ *   # Then /model and select corp-gateway/claude-opus-5
+ *                              or corp-gateway/claude-sonnet-5
+ *                              or corp-gateway/claude-opus-4-6
  */
 
 import Anthropic from "@anthropic-ai/sdk";
@@ -197,7 +198,7 @@ function mapStopReason(reason: string): StopReason {
 // Streaming Implementation
 // =============================================================================
 
-function streamAzureFoundry(
+function streamCorpGateway(
 	model: Model<Api>,
 	context: Context,
 	options?: SimpleStreamOptions,
@@ -231,13 +232,14 @@ function streamAzureFoundry(
 			const client = new Anthropic({
 				baseURL: model.baseUrl,
 				apiKey: null as any,
-				authToken: apiKey,
 				dangerouslyAllowBrowser: true,
 				defaultHeaders: {
-					accept: "application/json",
+					accept: "application/json",					
 					"anthropic-version": "2023-06-01",
 					"anthropic-beta": "fine-grained-tool-streaming-2025-05-14,interleaved-thinking-2025-05-14",
 					"anthropic-dangerous-direct-browser-access": "true",
+					"api-key": apiKey,
+					"x-api-key": null,
 				},
 			});
 
@@ -264,19 +266,37 @@ function streamAzureFoundry(
 				params.tools = convertTools(context.tools);
 			}
 
-			// Handle thinking/reasoning
+			// Handle thinking/reasoning.
+			// Gen-5+ models (claude-*-5, claude-opus-5, etc.) use the new
+			// "adaptive" thinking API with output_config.effort, while older
+			// models use the "enabled" API with budget_tokens.
 			if (options?.reasoning && model.reasoning) {
-				const defaultBudgets: Record<string, number> = {
-					minimal: 1024,
-					low: 4096,
-					medium: 10240,
-					high: 20480,
-				};
-				const customBudget = options.thinkingBudgets?.[options.reasoning as keyof typeof options.thinkingBudgets];
-				params.thinking = {
-					type: "enabled",
-					budget_tokens: customBudget ?? defaultBudgets[options.reasoning] ?? 10240,
-				};
+				const usesAdaptiveThinking = /claude-[a-z]+-5/.test(model.id) || model.id.startsWith("claude-opus-5");
+				if (usesAdaptiveThinking) {
+					// Map pi reasoning levels → Anthropic effort values
+					const effortMap: Record<string, string> = {
+						minimal: "low",
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "high",
+					};
+					const effort = effortMap[options.reasoning] ?? "medium";
+					(params as any).thinking = { type: "adaptive" };
+					(params as any).output_config = { effort };
+				} else {
+					const defaultBudgets: Record<string, number> = {
+						minimal: 1024,
+						low: 4096,
+						medium: 10240,
+						high: 20480,
+					};
+					const customBudget = options.thinkingBudgets?.[options.reasoning as keyof typeof options.thinkingBudgets];
+					params.thinking = {
+						type: "enabled",
+						budget_tokens: customBudget ?? defaultBudgets[options.reasoning] ?? 10240,
+					};
+				}
 			}
 
 			const anthropicStream = client.messages.stream({ ...params }, { signal: options?.signal });
@@ -399,54 +419,279 @@ function streamAzureFoundry(
 }
 
 // =============================================================================
+// Model Discovery
+// =============================================================================
+
+/**
+ * Fallback model list used at startup and if discovery fails.
+ * Keep this in sync with what you know is deployed.
+ */
+const FALLBACK_MODELS: Model<Api>[] = [
+	{
+		id: "claude-opus-5",
+		name: "Claude Opus 5 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		id: "claude-fable-5",
+		name: "Claude Fable 5 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		id: "claude-sonnet-5",
+		name: "Claude Sonnet 5 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
+	},
+	{
+		id: "claude-opus-4-8",
+		name: "Claude Opus 4.8 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		id: "claude-opus-4-7",
+		name: "Claude Opus 4.7 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		id: "claude-opus-4-6",
+		name: "Claude Opus 4.6 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		id: "claude-sonnet-4-6",
+		name: "Claude Sonnet 4.6 (Azure Foundry)",
+		reasoning: true,
+		input: ["text", "image"],
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
+	},
+] as unknown as Model<Api>[];
+
+/**
+ * Metadata we know about specific model ID prefixes, used to populate
+ * cost/capability fields for models returned by the gateway's /v1/models.
+ */
+const KNOWN_MODEL_META: Array<{
+	prefix: string;
+	reasoning: boolean;
+	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	contextWindow: number;
+	maxTokens: number;
+}> = [
+	// ----- Generation 5 -----
+	{
+		prefix: "claude-opus-5",
+		reasoning: true,
+		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		prefix: "claude-fable-5",
+		reasoning: true,
+		cost: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		prefix: "claude-sonnet-5",
+		reasoning: true,
+		cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 4 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
+	},
+	// ----- Opus 4 (specific versions before general prefix) -----
+	{
+		prefix: "claude-opus-4-8",
+		reasoning: true,
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		prefix: "claude-opus-4-7",
+		reasoning: true,
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	{
+		prefix: "claude-opus-4-6",
+		reasoning: true,
+		cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	// General Opus 4 catch-all (any future point releases)
+	{
+		prefix: "claude-opus-4",
+		reasoning: true,
+		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+		contextWindow: 1000000,
+		maxTokens: 32000,
+	},
+	// ----- Sonnet 4 -----
+	{
+		prefix: "claude-sonnet-4",
+		reasoning: true,
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+		contextWindow: 1000000,
+		maxTokens: 64000,
+	},
+	// ----- Haiku (unchanged) -----
+	{
+		prefix: "claude-haiku-3-5",
+		reasoning: false,
+		cost: { input: 0.8, output: 4, cacheRead: 0.08, cacheWrite: 1 },
+		contextWindow: 200000,
+		maxTokens: 8192,
+	},
+	{
+		prefix: "claude-haiku-3",
+		reasoning: false,
+		cost: { input: 0.25, output: 1.25, cacheRead: 0.03, cacheWrite: 0.3 },
+		contextWindow: 200000,
+		maxTokens: 4096,
+	},
+];
+
+function metaForModel(id: string) {
+	return (
+		KNOWN_MODEL_META.find((m) => id.startsWith(m.prefix)) ?? {
+			reasoning: false,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200000,
+			maxTokens: 16384,
+		}
+	);
+}
+
+function buildModelDef(id: string, displayName?: string): Model<Api> {
+	const meta = metaForModel(id);
+	return {
+		id,
+		name: `${displayName ?? id} (Azure Foundry)`,
+		input: ["text", "image"],
+		...meta,
+	} as unknown as Model<Api>;
+}
+
+async function discoverModels(baseUrl: string, apiKey: string): Promise<Model<Api>[]> {
+	const client = new Anthropic({
+		baseURL: baseUrl,
+		apiKey: null as any,
+		dangerouslyAllowBrowser: true,
+		defaultHeaders: {
+			accept: "application/json",
+			"anthropic-version": "2023-06-01",
+			"anthropic-dangerous-direct-browser-access": "true",
+			"api-key": apiKey,
+			"x-api-key": null,
+		},
+	});
+
+	const page = await client.models.list();
+	const models: Model<Api>[] = [];
+	for (const m of page.data) {
+		models.push(buildModelDef(m.id, (m as any).display_name));
+	}
+	return models;
+}
+
+// =============================================================================
 // Extension Entry Point
 // =============================================================================
 
 export default function (pi: ExtensionAPI) {
-	const baseUrl = process.env.AZURE_FOUNDRY_BASE_URL;
+	const baseUrl = process.env.CORP_GATEWAY_BASE_URL;
 	if (!baseUrl) {
 		console.error(
-			"[azure-foundry] AZURE_FOUNDRY_BASE_URL is not set. " +
-			"Set it to your Foundry endpoint, e.g. https://your-instance.services.ai.azure.com/anthropic"
+			"[corp-gateway] CORP_GATEWAY_BASE_URL is not set. " +
+			"Set it to your gateway endpoint, e.g. https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic"
 		);
 		return;
 	}
 
-	pi.registerProvider("azure-foundry", {
+	// Register immediately with the fallback list so the provider is always
+	// available from the first moment pi starts up.
+	pi.registerProvider("corp-gateway", {
 		baseUrl,
-		apiKey: "AZURE_FOUNDRY_API_KEY",
-		api: "azure-foundry-anthropic",
+		apiKey: "CORP_GATEWAY_API_KEY",
+		api: "corp-gateway-anthropic",
+		models: FALLBACK_MODELS,
+		streamSimple: streamCorpGateway,
+	});
 
-		models: [
-			{
-				id: "claude-opus-4-6",
-				name: "Claude Opus 4.6 (Azure Foundry)",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 15, output: 75, cacheRead: 1.5, cacheWrite: 18.75 },
-				contextWindow: 200000,
-				maxTokens: 32000,
-			},
-			{
-				id: "claude-sonnet-4-6",
-				name: "Claude Sonnet 4.6 (Azure Foundry)",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-				contextWindow: 200000,
-				maxTokens: 64000,
-			},
-			{
-				id: "claude-sonnet-4-20250514",
-				name: "Claude Sonnet 4 (Azure Foundry)",
-				reasoning: true,
-				input: ["text", "image"],
-				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
-				contextWindow: 200000,
-				maxTokens: 64000,
-			},
-		],
+	// Helper that runs discovery and re-registers with the live model list.
+	async function refreshModels(notify?: (msg: string, level: "info" | "error" | "success") => void) {
+		const apiKey = process.env.CORP_GATEWAY_API_KEY;
+		if (!apiKey) {
+			notify?.("CORP_GATEWAY_API_KEY is not set — cannot discover models", "error");
+			return;
+		}
+		try {
+			const discovered = await discoverModels(baseUrl, apiKey);
+			if (discovered.length === 0) {
+				notify?.("[corp-gateway] /v1/models returned an empty list — keeping fallback models", "error");
+				return;
+			}
+			pi.registerProvider("corp-gateway", {
+				baseUrl,
+				apiKey: "CORP_GATEWAY_API_KEY",
+				api: "corp-gateway-anthropic",
+				models: discovered,
+				streamSimple: streamCorpGateway,
+			});
+			notify?.(
+				`[corp-gateway] Discovered ${discovered.length} model(s): ${discovered.map((m) => m.id).join(", ")}`,
+				"success",
+			);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			notify?.(
+				`[corp-gateway] Model discovery failed (keeping fallback list): ${msg}`,
+				"error",
+			);
+		}
+	}
 
-		streamSimple: streamAzureFoundry,
+	// Kick off discovery in the background on startup. If it succeeds the
+	// provider is silently re-registered with the real model list; if it fails
+	// (e.g. the gateway doesn't expose /v1/models) we stay on the fallback.
+	refreshModels();
+
+	// Manual refresh command for when you want to see what changed or force an
+	// update mid-session: /corp-gateway-refresh-models
+	pi.registerCommand("corp-gateway-refresh-models", {
+		description: "Re-query the corp gateway for available models and update the provider list",
+		handler: async (_args, ctx) => {
+			ctx.ui.notify("Querying corp gateway for available models…", "info");
+			await refreshModels((msg, level) => ctx.ui.notify(msg, level));
+		},
 	});
 }
